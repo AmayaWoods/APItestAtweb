@@ -4,7 +4,10 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
 using System.Text.Json.Serialization;
 
-// ---------- TIPOS E FUNÇÕES (Devem ficar antes dos top-level statements) ----------
+// -----------------------------------------------------------------------------
+// DECLARAÇÕES (devem vir ANTES dos top-level statements)
+// -----------------------------------------------------------------------------
+
 public record ResumoRequest([property: JsonPropertyName("ResumoConversa")] string ResumoConversa);
 
 public record ParseResult(
@@ -102,7 +105,10 @@ public static class ParserHelpers
     }
 }
 
-// ---------- TOP-LEVEL STATEMENTS (aplicação) ----------
+// -----------------------------------------------------------------------------
+// TOP-LEVEL STATEMENTS (tudo abaixo é a aplicação que inicia e roda)
+// -----------------------------------------------------------------------------
+
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
 
