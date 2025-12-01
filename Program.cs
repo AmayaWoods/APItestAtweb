@@ -1,133 +1,85 @@
-using System;
-using System.Text.RegularExpressions;
 using System.Text.Json.Serialization;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Hosting;
+using System.Text.RegularExpressions;
+using System.Net.Http;
+using System.Text.Json;
 
-namespace ParserApi
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+
+app.MapPost("/extract", async (RequestData req) =>
 {
-    // MODELS
-    public record ResumoRequest([property: JsonPropertyName("ResumoConversa")] string ResumoConversa);
+    string texto = req?.ResumoConversa ?? string.Empty;
 
-    public record ParseResult(
-        string CPF,
-        string NOME,
-        string TELEFONE,
-        string ENDERECO,
-        string CEP,
-        string NUMERO_DA_NOTA,
-        string DATA_DE_COMPRA,
-        string NUMERO_DE_SERIE
-    );
-
-    // PARSER HELPERS
-    public static class ParserHelpers
+    string Extract(string pattern, int group = 1)
     {
-        public static ParseResult ExtrairCampos(string texto)
-        {
-            var options = RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant;
-            texto = Regex.Replace(texto ?? string.Empty, @"\s+", " ").Trim();
-
-            string nextLabels = @"(?=\s+(CPF:|NOME:|TELEFONE:|ENDEREÇO:|NÚMERO DA NOTA E DATA DE COMPRA:|NÚMERO DE SÉRIE:)|$)";
-
-            string ExtrairEntre(string label)
-            {
-                var pattern = $@"{Regex.Escape(label)}[:\s]*?(?<val>.*?){nextLabels}";
-                var m = Regex.Match(texto, pattern, options);
-                return m.Success ? m.Groups["val"].Value.Trim() : string.Empty;
-            }
-
-            var cpfMatch = Regex.Match(texto, @"CPF[:\s]*?(?<cpf>\d{11})", options);
-            var cpf = cpfMatch.Success ? cpfMatch.Groups["cpf"].Value : "";
-
-            var nome = ExtrairEntre("NOME");
-
-            var telefone = ExtrairEntre("TELEFONE");
-            if (string.IsNullOrEmpty(telefone))
-            {
-                var telMatch = Regex.Match(texto, @"\(?\d{2}\)?\s?\d{4,5}[-\s]?\d{4}", options);
-                if (telMatch.Success) telefone = telMatch.Value;
-            }
-
-            var endereco = ExtrairEntre("ENDEREÇO");
-
-            var cep = "";
-            var cepMatch = Regex.Match(endereco, @"\b(\d{8})\b");
-            if (cepMatch.Success) cep = cepMatch.Groups[1].Value;
-            else
-            {
-                cepMatch = Regex.Match(texto, @"\b(\d{8})\b");
-                if (cepMatch.Success) cep = cepMatch.Groups[1].Value;
-            }
-
-            var notaDataBlock = ExtrairEntre("NÚMERO DA NOTA E DATA DE COMPRA");
-            string numeroNota = "";
-            string dataCompra = "";
-
-            if (!string.IsNullOrEmpty(notaDataBlock))
-            {
-                var notaMatch = Regex.Match(notaDataBlock, @"(?<nota>\d+)", options);
-                if (notaMatch.Success) numeroNota = notaMatch.Groups["nota"].Value;
-
-                var dataMatch = Regex.Match(notaDataBlock, @"(?<data>\d{2}/\d{2}/\d{4})", options);
-                if (!dataMatch.Success)
-                    dataMatch = Regex.Match(notaDataBlock, @"(?<data>\d{2}/\d{2}/\d{2,4})", options);
-                if (dataMatch.Success) dataCompra = dataMatch.Groups["data"].Value;
-            }
-            else
-            {
-                var notaMatch = Regex.Match(texto, @"NÚMERO.*NOTA[:\s]*?(?<nota>\d+)", options);
-                if (notaMatch.Success) numeroNota = notaMatch.Groups["nota"].Value;
-
-                var dataMatch = Regex.Match(texto, @"(?<data>\d{2}/\d{2}/\d{4})", options);
-                if (dataMatch.Success) dataCompra = dataMatch.Groups["data"].Value;
-            }
-
-            var numSerie = ExtrairEntre("NÚMERO DE SÉRIE");
-            if (string.IsNullOrEmpty(numSerie))
-            {
-                var serieMatch = Regex.Match(texto, @"\b(\d{10,})\b", options);
-                if (serieMatch.Success) numSerie = serieMatch.Groups[1].Value;
-            }
-
-            string Clean(string s) => string.IsNullOrWhiteSpace(s) ? "" : s.Trim().Trim(',', ':');
-
-            return new ParseResult(
-                CPF: Clean(cpf),
-                NOME: Clean(nome),
-                TELEFONE: Clean(telefone),
-                ENDERECO: Clean(endereco),
-                CEP: Clean(cep),
-                NUMERO_DA_NOTA: Clean(numeroNota),
-                DATA_DE_COMPRA: Clean(dataCompra),
-                NUMERO_DE_SERIE: Clean(numSerie)
-            );
-        }
+        var m = Regex.Match(texto, pattern, RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        return m.Success ? m.Groups[group].Value.Trim() : string.Empty;
     }
 
-    // PROGRAMA (sem top-level statements)
-    public class Program
+    string onlyDigits(string s) => Regex.Replace(s ?? string.Empty, @"\D", "");
+
+    // Patterns
+    var cpfRaw = Extract(@"\bCPF[:\s]*([\d\.\-]{11,14})\b");
+    var telefoneRaw = Extract(@"\bTELEFONE[:\s]*(\(?\d{2}\)?\s*\d{4,5}-?\d{4})\b");
+    var nomeRaw = Extract(@"\bNOME[:\s]*([A-Za-zÀ-ÖØ-öø-ÿ\.\'\-\s]+?)(?=\s{2,}|CPF:|TELEFONE:|ENDEREÇO:|NÚMERO DA NOTA|NÚMERO DE SÉRIE|$)");
+    var enderecoRaw = Extract(@"\bENDEREÇO[:\s]*(.+?)(?=\s{2,}|CEP:|NÚMERO DA NOTA|NÚMERO DE SÉRIE|$)");
+    var cepRaw = Extract(@"\bCEP[:\s]*([\d\-\s]{7,9})\b");
+    if (string.IsNullOrEmpty(cepRaw))
     {
-        public static void Main(string[] args)
-        {
-            var builder = WebApplication.CreateBuilder(args);
-            var app = builder.Build();
-
-            app.MapPost("/parse", async (HttpRequest request) =>
-            {
-                var body = await request.ReadFromJsonAsync<ResumoRequest>();
-                if (body == null || string.IsNullOrWhiteSpace(body.ResumoConversa))
-                    return Results.BadRequest(new { error = "ResumoConversa é obrigatório." });
-
-                var texto = body.ResumoConversa;
-                var resultado = ParserHelpers.ExtrairCampos(texto);
-                return Results.Ok(resultado);
-            });
-
-            app.MapGet("/", () => "API ativa. POST /parse com JSON {\"ResumoConversa\":\"...\"}.");
-
-            app.Run();
-        }
+        // tentar achar um CEP de 8 dígitos no texto
+        var m = Regex.Match(texto, @"\b(\d{8})\b");
+        if (m.Success) cepRaw = m.Groups[1].Value;
     }
+    var cepDigits = onlyDigits(cepRaw);
+    var numeroNota = Extract(@"NÚMERO\s*(?:DA\s*)?NOTA[:\s\-]*([0-9]+)");
+    var dataCompra = Extract(@"(\d{2}\/\d{2}\/\d{4})"); // pegar primeira data
+    var numeroSerie = Extract(@"NÚMERO\s*DE\s*SÉRIE[:\s]*([A-Za-z0-9\-]{6,})");
+
+    // Normalizações
+    var cpf = onlyDigits(cpfRaw);
+    var telefone = onlyDigits(telefoneRaw);
+    var cep = cepDigits;
+
+    // ViaCEP lookup (opcional, se tiver CEP)
+    ViaCepResponse? viaCep = null;
+    if (!string.IsNullOrEmpty(cep) && cep.Length == 8)
+    {
+        try
+        {
+            using var http = new HttpClient();
+            var json = await http.GetStringAsync($"https://viacep.com.br/ws/{cep}/json/");
+            viaCep = JsonSerializer.Deserialize<ViaCepResponse>(json);
+        }
+        catch { /* não falhar a API se ViaCEP indisponível */ }
+    }
+
+    var result = new
+    {
+        CPF = cpf,
+        Nome = nomeRaw,
+        Telefone = telefone,
+        Endereco = enderecoRaw,
+        CEP = cep,
+        ViaCep = viaCep,
+        NumeroNota = numeroNota,
+        DataCompra = dataCompra,
+        NumeroSerie = numeroSerie
+    };
+
+    return Results.Json(result);
+});
+
+app.Run();
+
+public record RequestData([property: JsonPropertyName("resumoConversa")] string ResumoConversa);
+
+public record ViaCepResponse
+{
+    [JsonPropertyName("cep")] public string? Cep { get; init; }
+    [JsonPropertyName("logradouro")] public string? Logradouro { get; init; }
+    [JsonPropertyName("complemento")] public string? Complemento { get; init; }
+    [JsonPropertyName("bairro")] public string? Bairro { get; init; }
+    [JsonPropertyName("localidade")] public string? Localidade { get; init; }
+    [JsonPropertyName("uf")] public string? Uf { get; init; }
+    [JsonPropertyName("erro")] public bool? Erro { get; init; }
 }
